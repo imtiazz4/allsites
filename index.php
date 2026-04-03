@@ -150,8 +150,28 @@ if ($filter) {
 /* ---------------- SIZE ---------------- */
 if ($showSize) {
     foreach ($projects as &$p) {
-        $p['size']=getFolderSize($p['path']);
+    if ($showSize) {
+        $p['size'] = getFolderSize($p['path']);
+    } else {
+        $p['size'] = null; // initialize so all projects have this key
     }
+}
+unset($p); // break reference
+
+usort($projects, function($a, $b) use ($sort, $order, $showSize) {
+    $valA = $a[$sort] ?? '';
+    $valB = $b[$sort] ?? '';
+
+    // Size sort: treat null as 0
+    if ($sort === 'size') {
+        $valA = $valA ?? 0;
+        $valB = $valB ?? 0;
+    }
+
+    if ($valA == $valB) return 0;
+    $res = ($valA < $valB) ? -1 : 1;
+    return $order === 'asc' ? $res : -$res;
+});
 }
 
 /* ---------------- SORT ---------------- */
