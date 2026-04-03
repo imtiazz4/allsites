@@ -1,17 +1,21 @@
 <?php
+
 $baseDir = '/var/www/html';
 $laravelDir = $baseDir . '/laravel';
 
-/**
- * Restrict access to localhost only
- */
+/* ---------------- CONFIG ---------------- */
+$showSize = isset($_GET['show_size']) && $_GET['show_size'] === 'true';
+$showOther = isset($_GET['show_other_site']) && $_GET['show_other_site'] === 'true';
+$filter = $_GET['filter'] ?? '';
+$sort = $_GET['sort'] ?? 'name';
+$order = $_GET['order'] ?? 'asc';
+
+/* ---------------- SECURITY ---------------- */
 if (!in_array($_SERVER['REMOTE_ADDR'], ['127.0.0.1', '::1'])) {
     die('Access denied');
 }
 
-/**
- * Get folder size
- */
+/* ---------------- HELPERS ---------------- */
 function getFolderSize($dir) {
     $size = 0;
     foreach (new RecursiveIteratorIterator(new RecursiveDirectoryIterator($dir, FilesystemIterator::SKIP_DOTS)) as $file) {
@@ -21,86 +25,61 @@ function getFolderSize($dir) {
 }
 
 function formatSize($bytes) {
-    $units = ['B', 'KB', 'MB', 'GB', 'TB'];
-    for ($i = 0; $bytes > 1024; $i++) {
-        $bytes /= 1024;
-    }
-    return round($bytes, 2) . ' ' . $units[$i];
+    if ($bytes === null) return '-';
+    $units = ['B','KB','MB','GB','TB'];
+    for ($i=0;$bytes>1024;$i++) $bytes/=1024;
+    return round($bytes,2).' '.$units[$i];
 }
 
-/**
- * Recursive delete
- */
-function deleteFolder($dir) {
-    foreach (scandir($dir) as $item) {
-        if ($item == '.' || $item == '..') continue;
-        $path = "$dir/$item";
-        is_dir($path) ? deleteFolder($path) : unlink($path);
-    }
-    rmdir($dir);
-}
-
-/**
- * Extract DB name from WordPress
- */
 function getWpDbName($path) {
-    $config = file_get_contents($path . '/wp-config.php');
-    if (preg_match("/define\(\s*'DB_NAME'\s*,\s*'(.+?)'\s*\)/", $config, $matches)) {
-        return $matches[1];
-    }
+    $c = @file_get_contents($path.'/wp-config.php');
+    if (preg_match("/define\(\s*'DB_NAME'\s*,\s*'(.+?)'/",$c,$m)) return $m[1];
     return null;
 }
 
-/**
- * Extract DB name from Laravel
- */
 function getLaravelDbName($path) {
-    $envFile = $path . '/.env';
-    if (!file_exists($envFile)) return null;
-
-    $env = file($envFile);
-    foreach ($env as $line) {
-        if (strpos($line, 'DB_DATABASE=') === 0) {
-            return trim(str_replace('DB_DATABASE=', '', $line));
+    $env = $path.'/.env';
+    if (!file_exists($env)) return null;
+    foreach (file($env) as $line) {
+        if (strpos($line,'DB_DATABASE=')===0) {
+            return trim(str_replace('DB_DATABASE=','',$line));
         }
     }
     return null;
 }
 
-/**
- * Delete DB
- */
-function deleteDatabase($dbName) {
-    if (!$dbName) return;
-
-    $mysqli = new mysqli("localhost", "root", "admin", "");
-    if ($mysqli->connect_error) {
-        die("DB connection failed");
+function deleteFolder($dir) {
+    foreach (scandir($dir) as $f) {
+        if ($f=='.'||$f=='..') continue;
+        $p="$dir/$f";
+        is_dir($p)?deleteFolder($p):unlink($p);
     }
+    rmdir($dir);
+}
 
-    $dbName = $mysqli->real_escape_string($dbName);
-    $mysqli->query("DROP DATABASE IF EXISTS `$dbName`");
+function deleteDatabase($db) {
+    if (!$db) return;
+    $mysqli = new mysqli("localhost","root","admin","");
+    if ($mysqli->connect_error) return;
+    $db = $mysqli->real_escape_string($db);
+    $mysqli->query("DROP DATABASE IF EXISTS `$db`");
     $mysqli->close();
 }
 
-/**
- * Handle delete POST
- */
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+/* ---------------- DELETE ---------------- */
+if ($_SERVER['REQUEST_METHOD']==='POST') {
     $name = basename($_POST['name']);
     $type = $_POST['type'];
     $confirm = $_POST['confirm_name'];
 
-    if ($name !== $confirm) {
-        die("Confirmation name does not match!");
-    }
+    if ($name !== $confirm) die("Name mismatch");
 
-    if ($type === 'wp') {
-        $path = "$baseDir/$name";
-        $db = getWpDbName($path);
-    } elseif ($type === 'laravel') {
-        $path = "$laravelDir/$name";
-        $db = getLaravelDbName($path);
+    if ($type==='wp') {
+        $path="$baseDir/$name";
+        $db=getWpDbName($path);
+    } elseif ($type==='laravel') {
+        $path="$laravelDir/$name";
+        $db=getLaravelDbName($path);
     }
 
     if (isset($path) && is_dir($path)) {
@@ -108,113 +87,187 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         deleteDatabase($db);
     }
 
-    header("Location: index.php");
+    header("Location: ".$_SERVER['REQUEST_URI']);
     exit;
 }
 
-/**
- * Collect projects
- */
-$projects = [];
+/* ---------------- COLLECT ---------------- */
+$projects=[];
 
 /* WordPress */
-foreach (scandir($baseDir) as $folder) {
-    if ($folder === '.' || $folder === '..' || $folder === 'laravel') continue;
-
-    $path = "$baseDir/$folder";
-
-    if (is_dir($path) && file_exists("$path/wp-config.php")) {
-        $projects[] = [
-            'name' => $folder,
-            'type' => 'wp',
-            'url' => "http://localhost/$folder/wp-admin",
-            'path' => $path,
-            'db' => getWpDbName($path)
+foreach (scandir($baseDir) as $f) {
+    if (in_array($f,['.','..','laravel'])) continue;
+    $p="$baseDir/$f";
+    if (is_dir($p) && file_exists("$p/wp-config.php")) {
+        $projects[]=[
+            'name'=>$f,'type'=>'wp',
+            'url'=>"http://localhost/$f/wp-admin",
+            'db'=>getWpDbName($p),
+            'path'=>$p
         ];
     }
 }
 
 /* Laravel */
 if (is_dir($laravelDir)) {
-    foreach (scandir($laravelDir) as $folder) {
-        if ($folder === '.' || $folder === '..') continue;
-
-        $path = "$laravelDir/$folder";
-
-        if (is_dir($path) && file_exists("$path/artisan")) {
-            $projects[] = [
-                'name' => $folder,
-                'type' => 'laravel',
-                'url' => "http://localhost/laravel/$folder/public",
-                'path' => $path,
-                'db' => getLaravelDbName($path)
+    foreach (scandir($laravelDir) as $f) {
+        if (in_array($f,['.','..'])) continue;
+        $p="$laravelDir/$f";
+        if (is_dir($p) && file_exists("$p/artisan")) {
+            $projects[]=[
+                'name'=>$f,'type'=>'laravel',
+                'url'=>"http://localhost/laravel/$f/public",
+                'db'=>getLaravelDbName($p),
+                'path'=>$p
             ];
         }
     }
+}
+
+/* Other sites */
+if ($showOther) {
+    foreach (scandir($baseDir) as $f) {
+        if (in_array($f,['.','..','laravel'])) continue;
+        $p="$baseDir/$f";
+        if (!is_dir($p)) continue;
+
+        if (!file_exists("$p/wp-config.php")) {
+            $projects[]=[
+                'name'=>$f,'type'=>'other',
+                'url'=>"http://localhost/$f",
+                'db'=>null,
+                'path'=>$p
+            ];
+        }
+    }
+}
+
+/* ---------------- FILTER ---------------- */
+if ($filter) {
+    $projects = array_filter($projects, fn($p)=>stripos($p['name'],$filter)!==false);
+}
+
+/* ---------------- SIZE ---------------- */
+if ($showSize) {
+    foreach ($projects as &$p) {
+        $p['size']=getFolderSize($p['path']);
+    }
+}
+
+/* ---------------- SORT ---------------- */
+usort($projects,function($a,$b) use ($sort,$order,$showSize){
+    $valA = $a[$sort] ?? null;
+    $valB = $b[$sort] ?? null;
+
+    if ($sort==='size' && !$showSize) return 0;
+
+    if ($valA==$valB) return 0;
+    $res = ($valA < $valB) ? -1 : 1;
+    return $order==='asc' ? $res : -$res;
+});
+
+/* ---------------- UI ---------------- */
+function sortLink($label,$key) {
+    $q=$_GET;
+    $q['sort']=$key;
+    $q['order']=($q['order']??'asc')==='asc'?'desc':'asc';
+    return '?'.http_build_query($q);
+}
+
+function format_human_time($timestamp) {
+    //return date("j M Y, h:i A", $timestamp);
+     return date("j M Y", $timestamp);
 }
 ?>
 
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Local Projects Dashboard</title>
-    <style>
-        body { font-family: Arial; background:#f4f4f4; padding:20px; }
-        table { width:100%; border-collapse: collapse; background:white; }
-        th, td { padding:10px; border:1px solid #ddd; }
-        th { background:#333; color:white; }
-        .delete { color:red; cursor:pointer; }
-        input { padding:5px; }
-    </style>
+<title>Local Dashboard</title>
+<style>
+body{font-family:Arial;background:#f4f4f4;padding:20px}
+table{width:100%;border-collapse:collapse;background:#fff}
+th,td{padding:8px;border:1px solid #ddd}
+th{background:#333;color:#fff;cursor:pointer}
+a{color:blue;text-decoration:none}
+.delete{color:red}
+.topbar{margin-bottom:10px}
+</style>
 </head>
 <body>
 
-<h2>Local Projects (Safe Mode)</h2>
+<div class="topbar">
+<form>
+<input type="text" name="filter" placeholder="Search..." value="<?=htmlspecialchars($filter)?>">
+<label><input type="checkbox" name="show_size" value="true" <?= $showSize?'checked':'' ?>> Size</label>
+<label><input type="checkbox" name="show_other_site" value="true" <?= $showOther?'checked':'' ?>> Other Sites</label>
+<button>Apply</button>
+</form>
+</div>
 
 <table>
 <tr>
-    <th>Name</th>
-    <th>Type</th>
-    <th>DB</th>
-    <th>URL</th>
-    <th>Size</th>
-    <th>Created</th>
-    <th>Modified</th>
-    <th>Delete</th>
+<th>#</th>
+<th><a href="<?=sortLink('Name','name')?>">Name</a></th>
+<th><a href="<?=sortLink('Type','type')?>">Type</a></th>
+<th>DB</th>
+<th>URL</th>
+<th>Copy Path</th>
+<th><a href="<?=sortLink('Created','created')?>">Created</a></th>
+<th><a href="<?=sortLink('Modified','modified')?>">Modified</a></th>
+<th><a href="<?=sortLink('Size','size')?>">Size</a></th>
+<th>Action</th>
 </tr>
 
-<?php foreach ($projects as $p):
-   // $size = formatSize(getFolderSize($p['path']));
-   $size = "uncomment";
-    $created = date("Y-m-d H:i:s", filectime($p['path']));
-    $modified = date("Y-m-d H:i:s", filemtime($p['path']));
+<?php $i=1; foreach ($projects as $p):
+$created=date("Y-m-d H:i:s",filectime($p['path']));
+$modified=date("Y-m-d H:i:s",filemtime($p['path']));
 ?>
 
 <tr>
+<td><?= $i++ ?></td>
 <td><?= $p['name'] ?></td>
 <td><?= $p['type'] ?></td>
-<td><?= $p['db'] ?: 'N/A' ?></td>
-<td><a href="<?= $p['url'] ?>" target="_blank">Open</a></td>
-<td><?= $size ?></td>
-<td><?= $created ?></td>
-<td><?= $modified ?></td>
 <td>
-<form method="POST" onsubmit="return confirmDelete('<?= $p['name'] ?>')">
-    <input type="hidden" name="name" value="<?= $p['name'] ?>">
-    <input type="hidden" name="type" value="<?= $p['type'] ?>">
-    <input type="text" name="confirm_name" placeholder="Type name" required>
-    <button class="delete">Delete</button>
+<?php if($p['db']): ?>
+<a target="_blank" href="http://localhost/phpmyadmin/index.php?route=/database/structure&db=<?= $p['db'] ?>">
+<?= $p['db'] ?>
+</a>
+<?php endif; ?>
+</td>
+<td><a target="_blank" href="<?= $p['url'] ?>">Open</a></td>
+<td>
+    <button onclick="copyPath(this, '<?= addslashes($p['path']) ?>')">Copy</button>
+</td>
+<td><?= format_human_time(filectime($p['path'])) ?></td>
+<td><?= format_human_time(filemtime($p['path'])) ?></td>
+<td><?= $showSize ? formatSize($p['size']??null) : '-' ?></td>
+<td>
+<?php if($p['type']!=='other'): ?>
+<form method="POST" onsubmit="return confirm('Delete <?= $p['name'] ?>?')">
+<input type="hidden" name="name" value="<?= $p['name'] ?>">
+<input type="hidden" name="type" value="<?= $p['type'] ?>">
+<input type="text" name="confirm_name" placeholder="Type name" required>
+<button class="delete">Delete</button>
 </form>
+<?php endif; ?>
 </td>
 </tr>
 
 <?php endforeach; ?>
 
 </table>
-
 <script>
-function confirmDelete(name) {
-    return confirm("Type project name correctly and confirm deletion of: " + name);
+function copyPath(button, path) {
+    navigator.clipboard.writeText(path)
+        .then(() => {
+            const original = button.textContent;
+            button.textContent = 'Copied!';
+            setTimeout(() => button.textContent = original, 1000);
+        })
+        .catch(err => {
+            console.error('Failed to copy:', err);
+        });
 }
 </script>
 
